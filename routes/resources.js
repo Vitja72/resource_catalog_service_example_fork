@@ -21,6 +21,10 @@ import { validateResource, validateRating, validateFeedback } from '../middlewar
 import { readData, writeData } from '../helpers/data_manager.js';
 import { buildEnrichedResource } from '../helpers/enrich_resource.js';
 import { average } from '../helpers/metrics.js';
+import Resource from '../models/resource.js';
+import Rating from '../models/rating.js';
+import Feedback from '../models/feedback.js';
+import { toObjectId, toClient } from '../utils/mongo.js';
 
 const router = express.Router();
 
@@ -66,30 +70,52 @@ const FEEDBACK_FILE  = 'feedback.json';
  */
 router.get('/', async (req, res, next) => {
   try {
-    const resources = await readData(RESOURCES_FILE);
-    const ratings   = await readData(RATINGS_FILE);
+    // const resources = await readData(RESOURCES_FILE);
+    // const ratings   = await readData(RATINGS_FILE);
 
-    const { type, authorId } = req.query;
+    // const { type, authorId } = req.query;
 
-    let filtered = resources;
-    if (type)     filtered = filtered.filter(r => String(r.type) === String(type));
-    if (authorId) filtered = filtered.filter(r => String(r.authorId) === String(authorId));
+    // let filtered = resources;
+    // if (type)     filtered = filtered.filter(r => String(r.type) === String(type));
+    // if (authorId) filtered = filtered.filter(r => String(r.authorId) === String(authorId));
 
-    // Anreichern NUR mit averageRating (KEIN feedback anhängen)
-    const enriched = filtered.map(resource => {
-      const resourceId = String(resource.id);
-      const resourceRatings = ratings.filter(r => String(r.resourceId) === resourceId);
-      const avgRating = average(resourceRatings.map(r => r.ratingValue));
+    // // Anreichern NUR mit averageRating (KEIN feedback anhängen)
+    // const enriched = filtered.map(resource => {
+    //   const resourceId = String(resource.id);
+    //   const resourceRatings = ratings.filter(r => String(r.resourceId) === resourceId);
+    //   const avgRating = average(resourceRatings.map(r => r.ratingValue));
 
-      // explizit KEIN 'feedback' Feld zurückgeben
-      const { feedback, ...rest } = resource; // falls im Datensatz existiert, entfernen
+    //   // explizit KEIN 'feedback' Feld zurückgeben
+    //   const { feedback, ...rest } = resource; // falls im Datensatz existiert, entfernen
+    //   return {
+    //     ...rest,
+    //     averageRating: avgRating
+    //   };
+    // });
+
+    // res.status(200).json(enriched);
+
+    const resources = await Resource.find().lean();
+
+    const ratingAgg = await Rating.aggregate([
+      { $group: { _id: "$resourceId", avg: { $avg: "$ratingValue" } } }
+    ]);
+
+    const avgMap = Object.fromEntries(
+      ratingAgg.map((res) => [String(res._id), Number(res.avg?.toFixed(2) ?? 0)])
+    );
+
+    const enriched = resources.map((resource_doc) => {
+      const id = String(resource_doc._id);
+      const resource_obj = toClient(resource_doc);
       return {
-        ...rest,
-        averageRating: avgRating
+        ...resource_obj,
+        averageRating: avgMap[id] ?? 0
       };
     });
 
     res.status(200).json(enriched);
+    
   } catch (error) {
     console.error('Fehler beim Abrufen aller Ressourcen:', error);
     next(error);

@@ -160,23 +160,27 @@ router.get('/:id', async (req, res, next) => {
     // const feedback  = await readData(FEEDBACK_FILE);
 
     // const resource = resources.find(r => String(r.id) === String(resourceId));
-    //
+    // if (!resource) {
+    //   res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
+    //   return;
+    // }
 
     // // Hier voll anreichern (averageRating + feedback)
     // const enriched = buildEnrichedResource(resource, ratings, feedback);
     // res.status(200).json(enriched);
 
     const _id = toObjectId(req.params.id);
-    const resource = await Resource.findById(_id).lean();
 
-    if (!resource) {
+    const resource_doc = await Resource.findById(_id).lean();
+
+    if (!resource_doc) {
       res.status(404).json({ error: `Ressource mit ID ${req.params.id} nicht gefunden.` });
       return;
-    };
+    }
 
     const [avgDoc] = await Rating.aggregate([
       { $match: { resourceId: _id } },
-      { $group: { _id: null, avg: {$avg: 'ratingValue'} } }
+      { $group: { _id: null, avg: { $avg: "ratingValue" } } }
     ]);
 
     const avgRating = avgDoc?.avg ?? 0;
@@ -187,12 +191,11 @@ router.get('/:id', async (req, res, next) => {
 
     const enriched_resource = {
       ...resource_obj,
-      avaregRating: avgRating,
-      feedback: feedback.map(toClient) 
+      averageRating: avgRating,
+      feedback: feedback.map(toClient)
     };
 
     res.status(200).json(enriched_resource);
-
 
   } catch (error) {
     console.error(`Fehler beim Abrufen der Ressource mit ID ${req.params.id}:`, error);
@@ -216,19 +219,13 @@ router.get('/:id', async (req, res, next) => {
  * @returns {Object} 500 - Interner Serverfehler.
  */
 router.post('/', validateResource, async (req, res, next) => {
-  const newResourceData = req.body;
-
-  const newResource = {
-    id: uuidv4(),
-    ...newResourceData,
-    createdAt: new Date().toISOString()
-  };
-
   try {
-    const resources = await readData(RESOURCES_FILE);
-    resources.push(newResource);
-    await writeData(RESOURCES_FILE, resources);
-    res.status(201).json(newResource);
+    const newResource = {
+      ...req.body,
+      createdAt: new Date()
+    };
+    const created_resource = await Resource.create(newResource);
+    res.status(201).json(toClient(created_resource.toObject()));
   } catch (error) {
     console.error('Fehler beim Erstellen einer Ressource:', error);
     next(error);
@@ -252,32 +249,60 @@ router.post('/', validateResource, async (req, res, next) => {
  * @returns {Object} 500 - Interner Serverfehler.
  */
 router.put('/:id', async (req, res, next) => {
-  const resourceId = req.params.id;
-  const newData = req.body;
-
-  if (!newData || Object.keys(newData).length === 0) {
-    res.status(400).json({ error: 'Keine Daten zum Aktualisieren vorhanden.' });
-    return;
-  }
-
   try {
-    const resources = await readData(RESOURCES_FILE);
-    const idx = resources.findIndex(r => String(r.id) === String(resourceId));
+    const resourceId = req.params.id;
+    const _id = toObjectId(resourceId);
+    const newData = req.body;
 
-    if (idx === -1) {
+    if (!newData || Object.keys(newData).length === 0) {
+      res.status(400).json({ error: 'Keine Daten zum Aktualisieren vorhanden.' });
+      return;
+    }
+
+    // const resources = await readData(RESOURCES_FILE);
+    // const idx = resources.findIndex(r => String(r.id) === String(resourceId));
+
+    // if (idx === -1) {
+    //   res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
+    //   return;
+    // }
+
+    // resources[idx] = { ...resources[idx], ...newData, updatedAt: new Date().toISOString() };
+    // await writeData(RESOURCES_FILE, resources);
+
+    // // Enriched response (read latest ratings & feedback)
+    // const ratings  = await readData(RATINGS_FILE);
+    // const feedback = await readData(FEEDBACK_FILE);
+    // const enriched = buildEnrichedResource(resources[idx], ratings, feedback);
+
+ const updated_resource = await Resource.findByIdAndUpdate(
+      _id,
+      {...newData, updatedAt: new Date()},
+      { new: true, lean: true }
+    );
+    
+    if (!updated_resource) {
       res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
       return;
     }
 
-    resources[idx] = { ...resources[idx], ...newData, updatedAt: new Date().toISOString() };
-    await writeData(RESOURCES_FILE, resources);
+    const [avgDoc] = await Rating.aggregate([
+      { $match: { resourceId: _id } },
+      { $group: { _id: null, avg: { $avg: "ratingValue" } } }
+    ]);
 
-    // Enriched response (read latest ratings & feedback)
-    const ratings  = await readData(RATINGS_FILE);
-    const feedback = await readData(FEEDBACK_FILE);
-    const enriched = buildEnrichedResource(resources[idx], ratings, feedback);
+    const avgRating = avgDoc?.avg ?? 0;
 
-    res.status(200).json(enriched);
+    const feedback = await Feedback.find({ resourceId: _id }).lean();
+
+    const enriched_resource = {
+      ...updated_resource,
+      averageRating: avgRating,
+      feedback: feedback.map(toClient)
+    }
+
+
+    res.status(200).json(enriched_resource);
   } catch (error) {
     console.error(`Fehler beim Aktualisieren der Ressource mit ID ${req.params.id}:`, error);
     next(error);

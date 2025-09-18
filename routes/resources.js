@@ -322,20 +322,21 @@ router.put('/:id', async (req, res, next) => {
  * @returns {Object} 500 - Interner Serverfehler.
  */
 router.delete('/:id', async (req, res, next) => {
-  const resourceId = req.params.id;
-
   try {
-    let resources = await readData(RESOURCES_FILE);
-    const initialLength = resources.length;
+  const resourceId = req.params.id;
+  const _id = toObjectId(resourceId);
+  const deleted_resource = await Resource.findByIdAndDelete(_id);
 
-    resources = resources.filter(r => String(r.id) !== String(resourceId));
+  if (!deleted_resource) {
+    res.status(404).json({ error: `Resourcemit der ID ${resourceId} nicht gefunden`});
+    return;
+  }
+  await Promise.all([
+    Rating.deleteMany({ resourceId: _id }),
+    Feedback.deleteMany({ resourceId: _id })
 
-    if (resources.length === initialLength) {
-      res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
-      return;
-    }
-
-    await writeData(RESOURCES_FILE, resources);
+  ]);
+ 
     res.status(204).end();
   } catch (error) {
     console.error(`Fehler beim Löschen der Ressource mit ID ${req.params.id}:`, error);

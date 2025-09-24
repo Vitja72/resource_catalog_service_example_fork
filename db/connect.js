@@ -11,12 +11,11 @@ export async function connectDB (
 
     for (let i = 1; i <= retries; i++) {
         try {
-            await mongoose.connect(uri, { dbName })
+            await mongoose.connect(uri, { dbName });
             console.log(`[MongoDB] connected to ${dbName}`);
             return;
-
         } catch (err) {
-            console.error(`[MongoDB] connect attempt ${i}/${retries} faild: ${err.message}`);
+            console.error(`[MongoDB] connect attempt ${i}/${retries} failed: ${err.message}`);
             await new Promise((r) => setTimeout(r, delayMs));
         }
     }

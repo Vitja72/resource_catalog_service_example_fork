@@ -2,27 +2,26 @@
  * @file Helfer zum Anreichern eines Ressourcenobjekts mit Bewertungen & Feedback.
  */
 
-import { average } from './metrics.js';
 
-/**
- * Baut ein angereichertes Ressourcenobjekt mit `averageRating` und `feedback`
- * anhand der übergebenen Gesamtdaten.
- * @param {Object} resource - Die Basisressource.
- * @param {Array<Object>} ratings - Alle Ratings aus dem Datenspeicher.
- * @param {Array<Object>} feedback - Alles Feedback aus dem Datenspeicher.
- * @returns {Object} Enriched resource.
- */
-export function buildEnrichedResource(resource, ratings, feedback) {
-  const resourceId = String(resource.id);
+import Rating from '../models/rating.js';
+import Feedback from '../models/feedback.js';
+import { toClient } from '../utils/mongo.js';
 
-  const resourceRatings = ratings.filter(r => String(r.resourceId) === resourceId);
-  const avgRating = average(resourceRatings.map(r => r.ratingValue));
+export async function buildEnrichedResource(resource) {
+  const _id = resource._id;
 
-  const resourceFeedback = feedback.filter(f => String(f.resourceId) === resourceId);
+  const [avgDoc] = await Rating.aggregate([
+    { $match: { resourceId: _id } },
+    { $group: { _id: _id, avg: { $avg: "$ratingValue" } } }
+  ]);
+
+  const avgRating = avgDoc?.avg ?? 0;
+
+  const feedback = await Feedback.find({ resourceId: _id }).lean();
 
   return {
-    ...resource,
+    ...toClient(resource),
     averageRating: avgRating,
-    feedback: resourceFeedback
+    feedback: feedback.map(toClient)
   };
 }

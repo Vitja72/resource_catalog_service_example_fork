@@ -1,0 +1,27 @@
+# Dependencies & caches
+node_modules
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Runtime junk
+*.log
+coverage
+dist/*    # keep if you build in the container; ignore if you build locally
+
+# Env / secrets
+.env
+.env.*
+.envrc
+
+# VCS / editors / OS files
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+.DS_Store
+
+# Docker stuff you don't need in context (optional)
+docker-compose.yml
+Dockerfile

@@ -10,7 +10,6 @@ const ResourceSchema = new mongoose.Schema(
         updatedAt: Date
     },
     { versionKey: false }
-
 );
 
 export default mongoose.model("Resource", ResourceSchema, "resources");

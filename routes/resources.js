@@ -20,7 +20,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { validateResource, validateRating, validateFeedback } from '../middleware/validation.js';
 import { readData, writeData } from '../helpers/data_manager.js';
 import { buildEnrichedResource } from '../helpers/enrich_resource.js';
-import { average } from '../helpers/metrics.js';
 import Resource from '../models/resource.js';
 import Rating from '../models/rating.js';
 import Feedback from '../models/feedback.js';
@@ -153,48 +152,16 @@ router.get('/', async (req, res, next) => {
  */
 router.get('/:id', async (req, res, next) => {
   try {
-    // const resourceId = req.params.id;
-
-    // const resources = await readData(RESOURCES_FILE);
-    // const ratings   = await readData(RATINGS_FILE);
-    // const feedback  = await readData(FEEDBACK_FILE);
-
-    // const resource = resources.find(r => String(r.id) === String(resourceId));
-    // if (!resource) {
-    //   res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
-    //   return;
-    // }
-
-    // // Hier voll anreichern (averageRating + feedback)
-    // const enriched = buildEnrichedResource(resource, ratings, feedback);
-    // res.status(200).json(enriched);
-
     const _id = toObjectId(req.params.id);
 
-    const resource_doc = await Resource.findById(_id).lean();
+    const resource = await Resource.findById(_id).lean();
 
-    if (!resource_doc) {
+    if (!resource) {
       res.status(404).json({ error: `Ressource mit ID ${req.params.id} nicht gefunden.` });
       return;
     }
 
-    const [avgDoc] = await Rating.aggregate([
-      { $match: { resourceId: _id } },
-      { $group: { _id: null, avg: { $avg: "ratingValue" } } }
-    ]);
-
-    const avgRating = avgDoc?.avg ?? 0;
-
-    const feedback = await Feedback.find({ resourceId: _id }).lean();
-
-    const resource_obj = toClient(resource_doc);
-
-    const enriched_resource = {
-      ...resource_obj,
-      averageRating: avgRating,
-      feedback: feedback.map(toClient)
-    };
-
+    const enriched_resource = await buildEnrichedResource(resource);
     res.status(200).json(enriched_resource);
 
   } catch (error) {
@@ -259,23 +226,7 @@ router.put('/:id', async (req, res, next) => {
       return;
     }
 
-    // const resources = await readData(RESOURCES_FILE);
-    // const idx = resources.findIndex(r => String(r.id) === String(resourceId));
-
-    // if (idx === -1) {
-    //   res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
-    //   return;
-    // }
-
-    // resources[idx] = { ...resources[idx], ...newData, updatedAt: new Date().toISOString() };
-    // await writeData(RESOURCES_FILE, resources);
-
-    // // Enriched response (read latest ratings & feedback)
-    // const ratings  = await readData(RATINGS_FILE);
-    // const feedback = await readData(FEEDBACK_FILE);
-    // const enriched = buildEnrichedResource(resources[idx], ratings, feedback);
-
- const updated_resource = await Resource.findByIdAndUpdate(
+    const updated_resource = await Resource.findByIdAndUpdate(
       _id,
       {...newData, updatedAt: new Date()},
       { new: true, lean: true }
@@ -286,23 +237,9 @@ router.put('/:id', async (req, res, next) => {
       return;
     }
 
-    const [avgDoc] = await Rating.aggregate([
-      { $match: { resourceId: _id } },
-      { $group: { _id: null, avg: { $avg: "ratingValue" } } }
-    ]);
-
-    const avgRating = avgDoc?.avg ?? 0;
-
-    const feedback = await Feedback.find({ resourceId: _id }).lean();
-
-    const enriched_resource = {
-      ...updated_resource,
-      averageRating: avgRating,
-      feedback: feedback.map(toClient)
-    }
-
-
+    const enriched_resource = await buildEnrichedResource(updated_resource);
     res.status(200).json(enriched_resource);
+
   } catch (error) {
     console.error(`Fehler beim Aktualisieren der Ressource mit ID ${req.params.id}:`, error);
     next(error);
@@ -323,20 +260,21 @@ router.put('/:id', async (req, res, next) => {
  */
 router.delete('/:id', async (req, res, next) => {
   try {
-  const resourceId = req.params.id;
-  const _id = toObjectId(resourceId);
-  const deleted_resource = await Resource.findByIdAndDelete(_id);
+    const resourceId = req.params.id;
+    const _id = toObjectId(resourceId);
 
-  if (!deleted_resource) {
-    res.status(404).json({ error: `Resourcemit der ID ${resourceId} nicht gefunden`});
-    return;
-  }
-  await Promise.all([
-    Rating.deleteMany({ resourceId: _id }),
-    Feedback.deleteMany({ resourceId: _id })
+    const deleted_resource = await Resource.findByIdAndDelete(_id);
 
-  ]);
- 
+    if (!deleted_resource) {
+      res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
+      return;
+    }
+    
+    await Promise.all([
+      Rating.deleteMany({ resourceId: _id }),
+      Feedback.deleteMany({ resourceId: _id })
+    ]);
+
     res.status(204).end();
   } catch (error) {
     console.error(`Fehler beim Löschen der Ressource mit ID ${req.params.id}:`, error);
@@ -369,34 +307,32 @@ router.delete('/:id', async (req, res, next) => {
  * // Response (201): { id, title, ..., averageRating: 4.7, feedback: [...] }
  */
 router.post('/:resourceId/ratings', validateRating, async (req, res, next) => {
-  const resourceId = req.params.resourceId;
-  const { ratingValue, userId } = req.body;
-
-  const newRating = {
-    id: uuidv4(),
-    resourceId: String(resourceId),
-    ratingValue: Number(ratingValue),
-    userId: userId ? String(userId) : 'anonymous',
-    timestamp: new Date().toISOString()
-  };
-
   try {
-    // Validieren, dass die Ressource existiert
-    const resources = await readData(RESOURCES_FILE);
-    const resource = resources.find(r => String(r.id) === String(resourceId));
+
+    const resourceId = req.params.resourceId;
+    const _id = toObjectId(resourceId);
+
+    const resource = await Resource.findById(_id).lean();
+
     if (!resource) {
       res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
       return;
     }
 
-    const ratings  = await readData(RATINGS_FILE);
-    const feedback = await readData(FEEDBACK_FILE);
+    const { ratingValue, userId } = req.body;
 
-    ratings.push(newRating);
-    await writeData(RATINGS_FILE, ratings);
+    const newRating = {
+      resourceId: _id,
+      ratingValue: Number(ratingValue),
+      userId: userId ? String(userId) : 'anonymous',
+      timestamp: new Date()
+    };
 
-    const enriched = buildEnrichedResource(resource, ratings, feedback);
+    await Rating.create(newRating);
+
+    const enriched = await buildEnrichedResource(resource);
     res.status(201).json(enriched);
+
   } catch (error) {
     console.error(`Fehler beim Hinzufügen einer Bewertung für Ressource ${req.params.resourceId}:`, error);
     next(error);
@@ -428,33 +364,28 @@ router.post('/:resourceId/ratings', validateRating, async (req, res, next) => {
  * // Response (201): { id, title, ..., averageRating, feedback: [ ...neu hinzugefügter Eintrag..., ... ] }
  */
 router.post('/:resourceId/feedback', validateFeedback, async (req, res, next) => {
-  const resourceId = req.params.resourceId;
-  const { feedbackText, userId } = req.body;
-
-  const newFeedback = {
-    id: uuidv4(),
-    resourceId: String(resourceId),
-    feedbackText: String(feedbackText).trim(),
-    userId: userId ? String(userId) : 'anonymous',
-    timestamp: new Date().toISOString()
-  };
-
   try {
-    // Validieren, dass die Ressource existiert
-    const resources = await readData(RESOURCES_FILE);
-    const resource = resources.find(r => String(r.id) === String(resourceId));
+    const resourceId = req.params.resourceId;
+    const _id = toObjectId(resourceId);
+    const { feedbackText, userId } = req.body;
+
+    const resource = await Resource.findById(_id).lean();
+
     if (!resource) {
       res.status(404).json({ error: `Ressource mit ID ${resourceId} nicht gefunden.` });
       return;
     }
 
-    const ratings  = await readData(RATINGS_FILE);
-    const feedback = await readData(FEEDBACK_FILE);
+    const newFeedback = {
+      resourceId: _id,
+      feedbackText: String(feedbackText).trim(),
+      userId: userId ? String(userId) : 'anonymous',
+      timestamp: new Date()
+    };
 
-    feedback.push(newFeedback);
-    await writeData(FEEDBACK_FILE, feedback);
+    await Feedback.create(newFeedback);
 
-    const enriched = buildEnrichedResource(resource, ratings, feedback);
+    const enriched = await buildEnrichedResource(resource);
     res.status(201).json(enriched);
   } catch (error) {
     console.error(`Fehler beim Hinzufügen von Feedback für Ressource ${req.params.resourceId}:`, error);
@@ -479,29 +410,23 @@ router.post('/:resourceId/feedback', validateFeedback, async (req, res, next) =>
  * @returns {Object} 500 - Interner Serverfehler.
  */
 router.put('/:resourceId/feedback/:feedbackId', validateFeedback, async (req, res, next) => {
-  const resourceId = req.params.resourceId;
-  const feedbackId = req.params.feedbackId;
-  const { feedbackText } = req.body;
-
   try {
-    const feedback = await readData(FEEDBACK_FILE);
-    const idx = feedback.findIndex(
-      f => String(f.id) === String(feedbackId) && String(f.resourceId) === String(resourceId)
+    const resourceId = toObjectId(req.params.resourceId);
+    const feedbackId = toObjectId(req.params.feedbackId);
+    const { feedbackText } = req.body;
+
+    const updated_feedback = await Feedback.findOneAndUpdate(
+      { _id: feedbackId, resourceId },
+      { feedbackText, timestamp: new Date() },
+      { new: true, lean: true }
     );
 
-    if (idx === -1) {
-      res.status(404).json({ error: `Feedback mit ID ${feedbackId} für Ressource ${resourceId} nicht gefunden.` });
+    if (!updated_feedback){
+      res.status(404).json({ error: `Feedback mit ID ${feedbackId} nicht gefunden.` });
       return;
     }
 
-    feedback[idx] = {
-      ...feedback[idx],
-      feedbackText: String(feedbackText).trim(),
-      timestamp: new Date().toISOString()
-    };
-
-    await writeData(FEEDBACK_FILE, feedback);
-    res.status(200).json(feedback[idx]);
+    res.status(200).json(updated_feedback);
   } catch (error) {
     console.error(`Fehler beim Aktualisieren von Feedback ${req.params.feedbackId} für Ressource ${req.params.resourceId}:`, error);
     next(error);
@@ -522,23 +447,19 @@ router.put('/:resourceId/feedback/:feedbackId', validateFeedback, async (req, re
  * @returns {Object} 500 - Interner Serverfehler.
  */
 router.delete('/:resourceId/feedback/:feedbackId', async (req, res, next) => {
-  const resourceId = req.params.resourceId;
-  const feedbackId = req.params.feedbackId;
-
   try {
-    let feedback = await readData(FEEDBACK_FILE);
-    const initialLength = feedback.length;
+    const resourceId = toObjectId(req.params.resourceId);
+    const feedbackId = toObjectId(req.params.feedbackId);
 
-    feedback = feedback.filter(
-      f => !(String(f.id) === String(feedbackId) && String(f.resourceId) === String(resourceId))
+    const deleted_feedback = await Feedback.deleteOne(
+      { _id: feedbackId, resourceId }
     );
 
-    if (feedback.length === initialLength) {
-      res.status(404).json({ error: `Feedback mit ID ${feedbackId} für Ressource ${resourceId} nicht gefunden.` });
+    if (!deleted_feedback){
+      res.status(404).json({ error: `Feedback mit ID ${feedbackId} nicht gefunden.` });
       return;
     }
 
-    await writeData(FEEDBACK_FILE, feedback);
     res.status(204).end();
   } catch (error) {
     console.error(`Fehler beim Löschen von Feedback ${req.params.feedbackId} für Ressource ${req.params.resourceId}:`, error);
